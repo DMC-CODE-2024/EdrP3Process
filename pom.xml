@@ -83,7 +83,7 @@
     </dependencies>
 
     <build>
-        <finalName>etl_edr_p3</finalName>
+        <finalName>etl_edr_p3_1.0.0</finalName>
 
         <plugins>
             <plugin>

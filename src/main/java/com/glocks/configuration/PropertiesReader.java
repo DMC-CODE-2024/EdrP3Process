@@ -50,4 +50,7 @@ public class PropertiesReader {
     @Value("${p3ProcessedPath}")
     public String p3ProcessedPath;
 
+    @Value("${p3InputPath}")
+    public String p3InputPath;
+
 }

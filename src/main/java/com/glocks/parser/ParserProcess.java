@@ -8,11 +8,11 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.stereotype.Component;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileReader;
+import java.io.*;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -40,23 +40,8 @@ public class ParserProcess {
     //
     static Logger logger = LogManager.getLogger(ParserProcess.class);
 
-    public static void CdrParserProces(Connection conn, String filePath) {
+    public static void CdrParserProces(Connection conn, String filePath, String operator, String source) {
         logger.debug(" FilePath :" + filePath);
-        String source = null;
-        String operator = null;
-        if (filePath != null) {
-            String[] arrOfStr = filePath.split("/", 0);
-            int val = 0;
-            for (int i = (arrOfStr.length - 1); i >= 0; i--) {
-                if (val == 1) {
-                    source = arrOfStr[i];
-                }
-                if (val == 2) {
-                    operator = arrOfStr[i].toUpperCase();
-                }
-                val++;
-            }
-        }
         String fileName = new FileList().readOldestOneFile(filePath);
         if (fileName == null) {
             logger.debug(" No File Found");
@@ -70,7 +55,11 @@ public class ParserProcess {
         logger.debug("Period is [" + period + "] ");
         rulelist = getRuleDetails(operator, conn, operator_tag, period);
         logger.debug("rule list to be  " + rulelist);
-        addCDRInProfileWithRule(operator, conn, rulelist, operator_tag, period, filePath, source, fileName);
+        for (Path file : getAllFilesList(filePath)) {
+            logger.info("Start executing process for : " + file.getFileName());
+            addCDRInProfileWithRule(operator, conn, rulelist, operator_tag, period, filePath, source, file.getFileName().toString());
+            logger.info("Ending executing process for : " + file.getFileName());
+        }
     }
 
     private static void addCDRInProfileWithRule(String operator, Connection conn, ArrayList<Rule> rulelist, String operator_tag, String period, String filePath, String source, String fileName) {
@@ -185,7 +174,7 @@ public class ParserProcess {
                                 finalAction = "SYS_REG";
                             } else if (period.equalsIgnoreCase("Post_Grace")) {
                                 finalAction = "USER_REG";
-                             //   sendMessageToMsisdn(conn, device_info.get("msisdn"), device_info.get("IMEI"));
+                                //   sendMessageToMsisdn(conn, device_info.get("msisdn"), device_info.get("IMEI"));
                             }
                         }
                     } else {
@@ -278,7 +267,7 @@ public class ParserProcess {
                     if (my_query.contains("insert")) {
                         executorService.execute(new InsertDbDao(conn, my_query, device_info, bw1));
                     } else {
-                        logger.info(" writing query in file== " + my_query);
+                        //  logger.info(" writing query in file== " + my_query);
                         bw1.write(my_query + ";");
                         bw1.newLine();
                     }
@@ -292,7 +281,12 @@ public class ParserProcess {
             Date p2Endtime = new Date();
             cdrFileDetailsUpdate(conn, operator, device_info.get("file_name"), usageInsert, usageUpdate, duplicateInsert, duplicateUpdate, nullInsert, nullUpdate, p2Starttime, p2Endtime, "all", counter, device_info.get("raw_cdr_file_name"),
                     foreignMsisdn, server_origin, usageInsertForeign, usageUpdateForeign, duplicateInsertForeign, duplicateUpdateForeign, errorCount);
-            new FileList().moveCDRFile(conn, fileName, operator, filePath, source, propertiesReader.p3ProcessedPath);
+
+            Files.createDirectories(Paths.get(propertiesReader.p3ProcessedPath +"/"  + operator + "/" + source + "/"));
+            Files.move(Paths.get(filePath + fileName),
+                    Paths.get(propertiesReader.p3ProcessedPath +"/" + operator + "/" + source + "/" + fileName));
+
+            logger.info("File Moved ->" + filePath + fileName + " To ->" + propertiesReader.p3ProcessedPath +"/"  + operator + "/" + source + "/" + fileName);
             updateModuleAudit(conn, 200, "Success", "", insertedKey, executionStartTime, fileCount, errorCount);
         } catch (Exception e) {
             logger.error(e + "in [" + Arrays.stream(e.getStackTrace()).filter(ste -> ste.getClassName().equals(ParserProcess.class.getName())).collect(Collectors.toList()).get(0) + "]");
@@ -423,5 +417,25 @@ public class ParserProcess {
         }
     }
 
+    private static List<Path> getAllFilesList(String path) {
+        List<Path> files_at_directory = null;
+        try {
+            files_at_directory = Files.list(Paths.get(path))
+                    .filter(Files::isRegularFile)
+                    .sorted(Comparator.comparingLong(pat -> {
+                        try {
+                            return Files.readAttributes(pat, BasicFileAttributes.class).creationTime().toMillis();
+                        } catch (IOException e) {
+                            logger.error("Not able to retrieve the Files" + e);
+                            throw new RuntimeException(e);
+                        }
+                    }))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            logger.error("Corrupt file or No File Present at  " + e);
+        }
+        logger.info("Total Files to be processed : " + files_at_directory.size());
+        return files_at_directory;
+    }
 
 }

@@ -43,7 +43,7 @@ public class EdrP3Process {
     public static int duplicateUpdateForeign = 0;
     public static PropertiesReader propertiesReader = null;
     public static Connection conn = null;
-
+    static String p3InputPath;
     static Logger logger = LogManager.getLogger(EdrP3Process.class);
     static ConnectionConfiguration connectionConfiguration = null;
 
@@ -61,22 +61,19 @@ public class EdrP3Process {
         repdbName = propertiesReader.repdbName;
         serverName = propertiesReader.serverName;
 
-        sqlInputPath = propertiesReader.sqlInputPath;
-        p3ProcessedPath = propertiesReader.p3ProcessedPath;
-
+        sqlInputPath = propertiesReader.sqlInputPath + "/";
+        p3ProcessedPath = propertiesReader.p3ProcessedPath + "/";
+        p3InputPath = propertiesReader.p3InputPath + "/";
         sleepTime = Integer.parseInt(propertiesReader.sleepTime);
         dateFunction = Util.defaultDateNow(conn.toString().contains("oracle"));
 
-        String filePath = null;
-        if (args[0] == null) {
-            logger.error("Enter the Correct File Path");
-        } else {
-            filePath = args[0].trim();
-        }
-        if (!filePath.endsWith("/")) {
-            filePath += "/";
-        }
-        CdrParserProces(conn, filePath);
+        String operatorName = args[0];
+        String counter = args[1];
+        String filePath = p3InputPath + args[0] + "/" + args[1] + "/";
+        logger.info(" FilePath:" + filePath);
+
+        CdrParserProces(conn, filePath, operatorName, counter);
+        // CdrParserProces(conn, filePath);
         System.exit(0);
 
     }
