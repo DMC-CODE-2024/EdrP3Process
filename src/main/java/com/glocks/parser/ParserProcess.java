@@ -13,13 +13,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
+import java.sql.*;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.Date;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
@@ -80,11 +78,13 @@ public class ParserProcess {
         String[] data = null;
         BufferedReader br = null;
         FileReader fr = null;
-        BufferedWriter bw1 = null;
+        BufferedWriter bw = null;
         int counter = 1;
         int foreignMsisdn = 0;
         int errorCount = 0;
         int fileCount = 0;
+        int usageInsert = 0, usageUpdate = 0, duplicateInsert = 0, duplicateUpdate = 0,
+                usageInsertForeign = 0, usageUpdateForeign = 0, duplicateInsertForeign = 0, duplicateUpdateForeign = 0;
         try {
             String server_origin = propertiesReader.serverName;
             file = new File(filePath + fileName);
@@ -95,12 +95,13 @@ public class ParserProcess {
                 logger.warn("" + e);
             }
             insertIntoDbForP2_5(conn, file.getAbsolutePath(), operator);
+          int cdrfiledetailid = cdrFileDetailsInsert(conn, operator, fileName);
             String enableForeignSimHandling = getSystemConfigDetailsByTag(conn, "enableForeignSimHandling");
             logger.info("Foreign Sim Handling is {} ", enableForeignSimHandling);
             fr = new FileReader(file);
             br = new BufferedReader(fr);
 
-            bw1 = getSqlFileWriter(conn, operator, source, fileName);
+            bw = getSqlFileWriter(conn, operator, source, fileName);
             Date p2Starttime = new Date();
             HashMap<String, String> device_info = new HashMap<String, String>();
             RuleFilter rule_filter = new RuleFilter();
@@ -114,6 +115,8 @@ public class ParserProcess {
             String[] testImies = getTestImeis(conn).split(",");
             HashMap<String, Date> validTacMap = getValidTac(conn);
             String oldimei = "0";
+            ArrayList<String> updateQuery = new ArrayList<>();
+
             while ((line = br.readLine()) != null) {
                 device_info.clear();
                 data = line.split(propertiesReader.commaDelimiter, -1);
@@ -265,11 +268,10 @@ public class ParserProcess {
                     }
                     logger.info("query : " + my_query);
                     if (my_query.contains("insert")) {
-                        executorService.execute(new InsertDbDao(conn, my_query, device_info, bw1));
+                        executorService.execute(new InsertDbDao(conn, my_query, device_info, bw));
                     } else {
-                        //  logger.info(" writing query in file== " + my_query);
-                        bw1.write(my_query + ";");
-                        bw1.newLine();
+                        bw.write(my_query + ";");
+                        bw.newLine();
                     }
                     logger.info("Remaining List :: " + (fileCount - (counter + errorCount)));
                 } catch (Exception e) {
@@ -279,8 +281,9 @@ public class ParserProcess {
             } // While End
             executorService.shutdown();
             Date p2Endtime = new Date();
-            cdrFileDetailsUpdate(conn, operator, device_info.get("file_name"), usageInsert, usageUpdate, duplicateInsert, duplicateUpdate, nullInsert, nullUpdate, p2Starttime, p2Endtime, "all", counter, device_info.get("raw_cdr_file_name"),
-                    foreignMsisdn, server_origin, usageInsertForeign, usageUpdateForeign, duplicateInsertForeign, duplicateUpdateForeign, errorCount);
+
+            cdrFileDetailsUpdate(conn, cdrfiledetailid, usageInsert, usageUpdate, duplicateInsert, duplicateUpdate, nullInsert, nullUpdate, p2Starttime, p2Endtime, "all", counter, device_info.get("raw_cdr_file_name"), foreignMsisdn, usageInsertForeign, usageUpdateForeign, duplicateInsertForeign, duplicateUpdateForeign, errorCount);
+         //   cdrFileDetailsUpdate(conn, operator, device_info.get("file_name"), usageInsert, usageUpdate, duplicateInsert, duplicateUpdate, nullInsert, nullUpdate, p2Starttime, p2Endtime, "all", counter, device_info.get("raw_cdr_file_name")//          foreignMsisdn, server_origin, usageInsertForeign, usageUpdateForeign, duplicateInsertForeign, duplicateUpdateForeign, errorCount);
 
             Files.createDirectories(Paths.get(propertiesReader.p3ProcessedPath +"/"  + operator + "/" + source + "/"));
             Files.move(Paths.get(filePath + fileName),
@@ -295,7 +298,7 @@ public class ParserProcess {
         } finally {
             try {
                 br.close();
-                bw1.close();
+                bw.close();
             } catch (Exception e) {
                 logger.error(e + "in [" + Arrays.stream(e.getStackTrace()).filter(ste -> ste.getClassName().equals(ParserProcess.class.getName())).collect(Collectors.toList()).get(0) + "]");
             }
@@ -362,7 +365,7 @@ public class ParserProcess {
         Statement stmt = null;
         try {
             query = "select a.id as rule_id,a.name as rule_name,b.output as output,b.grace_action, b.post_grace_action, b.failed_rule_action_grace, b.failed_rule_action_post_grace " + " from " + appdbName + ".rule a, " + appdbName + ".feature_rule b where  a.name=b.name  and a.state='Enabled' and b.feature='EDR' and   b." + period
-                    + "_action !='NA' order by b.rule_order asc";
+                    + "_action not in   ('NA', 'Disabled') order by b.rule_order asc";
             logger.info("Query is " + query);
             stmt = conn.createStatement();
             rs1 = stmt.executeQuery(query);
@@ -392,30 +395,88 @@ public class ParserProcess {
         return rule_details;
     }
 
-    static void cdrFileDetailsUpdate(Connection conn, String operator, String fileName, int usageInsert, int usageUpdate, int duplicateInsert, int duplicateUpdate, int nullInsert, int nullUpdate, Date P2StartTime, Date P2EndTime, String source, int counter, String raw_cdr_file_name,
-                                     int foreignMsisdn, String server_origin, int usageInsertForeign, int usageUpdateForeign, int duplicateInsertForeign, int duplicateUpdateForeign, int errorCount) {
-        String query = null;
-        DateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-        Statement stmt = null;
-        query = "insert into  " + edrappdbName + ".cdr_file_processed_detail (total_inserts_in_usage_db,total_updates_in_usage_db ,total_insert_in_dup_db , total_updates_in_dup_db , total_insert_in_null_db , total_update_in_null_db , startTime , endTime ,operator , file_name, total_records_count ,"
-                + " raw_cdr_file_name  ,source  ,foreignMsisdn  , STATUS , server_origin , total_inserts_in_foreignusage_db,total_updates_in_foreignusage_db ,total_insert_in_foreigndup_db , total_updates_in_foreigndup_db,total_error_record_count ) "
-                + "values(   '" + usageInsert + "' , '" + usageUpdate + "'  , '" + duplicateInsert + "' , '" + duplicateUpdate + "' " + " ,'" + nullInsert + "' ,'" + nullUpdate + "', " + defaultStringtoDate(df.format(P2StartTime)) + " , " + defaultStringtoDate(df.format(P2EndTime)) + " ,   '" + operator + "', '" + fileName + "' , '"
-                + (counter - 1) + "' , '" + raw_cdr_file_name + "' , '" + source + "'  , '" + foreignMsisdn + "' , 'End' ,  '" + server_origin + "'   ,   '" + usageInsertForeign + "' , '" + usageUpdateForeign + "'  , '" + duplicateInsertForeign + "' , '" + duplicateUpdateForeign + "'  , '" + errorCount + "'     )  ";
-        logger.info(" query is " + query);
+
+    static int cdrFileDetailsInsert(Connection conn, String operator, String fileName) {
+        int generatedKey = 0;
+        String query = " insert into  " + appdbName + ".cdr_file_processed_detail " + "(operator , file_name , status , server_origin ,source ) "
+                + "values('" + operator + "', '" + fileName + "' ,'p3_inprocess', '" + serverName + "','all')";
+        logger.info(query);
         try {
-            stmt = conn.createStatement();
-            stmt.executeUpdate(query);
-            stmt.close();
-        } catch (SQLException e) {
-            logger.error(e + "in [" + Arrays.stream(e.getStackTrace()).filter(ste -> ste.getClassName().equals(ParserProcess.class.getName())).collect(Collectors.toList()).get(0) + "]");
-        } finally {
-            try {
-                stmt.close();
-            } catch (SQLException e) {
-                logger.error(e + "in [" + Arrays.stream(e.getStackTrace()).filter(ste -> ste.getClassName().equals(ParserProcess.class.getName())).collect(Collectors.toList()).get(0) + "]");
+            PreparedStatement ps = conn.prepareStatement(query, Statement.RETURN_GENERATED_KEYS);
+            ps.execute();
+            ResultSet rs = ps.getGeneratedKeys();
+            if (rs.next()) {
+                generatedKey = rs.getInt(1);
             }
+            logger.info("Inserted record's ID: " + generatedKey);
+            rs.close();
+        } catch (Exception e) {
+            logger.error("Failed  " + e);
+        }
+        return generatedKey;
+    }
+
+    static void cdrFileDetailsUpdate(Connection conn, int cdrfiledetailid, int usageInsert, int usageUpdate, int duplicateInsert, int duplicateUpdate, int nullInsert, int nullUpdate, Date P2StartTime, Date P2EndTime, String source, int counter, String raw_cdr_file_name,
+                                     int foreignMsisdn, int usageInsertForeign, int usageUpdateForeign, int duplicateInsertForeign, int duplicateUpdateForeign, int errorCount) {
+        DateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+//        query = "insert into  " + appdbName + ".cdr_file_processed_detail (total_inserts_in_usage_db,total_updates_in_usage_db ,total_insert_in_dup_db , total_updates_in_dup_db , total_insert_in_null_db , total_update_in_null_db , startTime , endTime ,operator , file_name, total_records_count ,"
+//                + " raw_cdr_file_name  ,source  ,foreignMsisdn  , STATUS , server_origin , total_inserts_in_foreignusage_db,total_updates_in_foreignusage_db ,total_insert_in_foreigndup_db , total_updates_in_foreigndup_db,total_error_record_count ) "
+//                + "values(   '" + usageInsert + "' , '" + usageUpdate + "'  , '" + duplicateInsert + "' , '" + duplicateUpdate + "' " + " ,'" + nullInsert + "' ,'" + nullUpdate + "', " + defaultStringtoDate(df.format(P2StartTime)) + " , " + defaultStringtoDate(df.format(P2EndTime)) + " ,   '" + operator + "', '" + fileName + "' , '"
+//                + (counter - 1) + "' , '" + raw_cdr_file_name + "' , '" + source + "'  , '" + foreignMsisdn + "' , 'End' ,  '" + server_origin + "'   ,   '" + usageInsertForeign + "' , '" + usageUpdateForeign + "'  , '" + duplicateInsertForeign + "' , '" + duplicateUpdateForeign + "'  , '" + errorCount + "'     )  ";
+//        logger.info(" query is " + query);
+
+        String updateQuery = "UPDATE " + appdbName + ".cdr_file_processed_detail "
+                + "SET total_inserts_in_usage_db = '" + usageInsert + "', "
+                + "total_updates_in_usage_db = '" + usageUpdate + "', "
+                + "total_insert_in_dup_db = '" + duplicateInsert + "', "
+                + "total_updates_in_dup_db = '" + duplicateUpdate + "', "
+                + "total_insert_in_null_db = '" + nullInsert + "', "
+                + "total_update_in_null_db = '" + nullUpdate + "', "
+                + "startTime = " + defaultStringtoDate(df.format(P2StartTime)) + ", "
+                + "endTime = " + defaultStringtoDate(df.format(P2EndTime)) + ", "
+                + "total_records_count = '" + (counter - 1) + "', "
+                + "raw_cdr_file_name = '" + raw_cdr_file_name + "', "
+                + "source = '" + source + "', "
+                + "foreignMsisdn = '" + foreignMsisdn + "', "
+                + "STATUS = 'p3_done', "
+                + "total_inserts_in_foreignusage_db = '" + usageInsertForeign + "', "
+                + "total_updates_in_foreignusage_db = '" + usageUpdateForeign + "', "
+                + "total_insert_in_foreigndup_db = '" + duplicateInsertForeign + "', "
+                + "total_updates_in_foreigndup_db = '" + duplicateUpdateForeign + "', "
+                + "total_error_record_count = '" + errorCount + "' "
+                + "WHERE id =" + cdrfiledetailid;
+        logger.info(" query is " + updateQuery);
+        try (Statement stmt = conn.createStatement();) {
+            stmt.executeUpdate(updateQuery);
+        } catch (Exception e) {
+            logger.error(""  + e);
         }
     }
+//
+//    static void cdrFileDetailsUpdate(Connection conn, String operator, String fileName, int usageInsert, int usageUpdate, int duplicateInsert, int duplicateUpdate, int nullInsert, int nullUpdate, Date P2StartTime, Date P2EndTime, String source, int counter, String raw_cdr_file_name,
+//                                     int foreignMsisdn, String server_origin, int usageInsertForeign, int usageUpdateForeign, int duplicateInsertForeign, int duplicateUpdateForeign, int errorCount) {
+//        String query = null;
+//        DateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+//        Statement stmt = null;
+//        query = "insert into  " + edrappdbName + ".cdr_file_processed_detail (total_inserts_in_usage_db,total_updates_in_usage_db ,total_insert_in_dup_db , total_updates_in_dup_db , total_insert_in_null_db , total_update_in_null_db , startTime , endTime ,operator , file_name, total_records_count ,"
+//                + " raw_cdr_file_name  ,source  ,foreignMsisdn  , STATUS , server_origin , total_inserts_in_foreignusage_db,total_updates_in_foreignusage_db ,total_insert_in_foreigndup_db , total_updates_in_foreigndup_db,total_error_record_count ) "
+//                + "values(   '" + usageInsert + "' , '" + usageUpdate + "'  , '" + duplicateInsert + "' , '" + duplicateUpdate + "' " + " ,'" + nullInsert + "' ,'" + nullUpdate + "', " + defaultStringtoDate(df.format(P2StartTime)) + " , " + defaultStringtoDate(df.format(P2EndTime)) + " ,   '" + operator + "', '" + fileName + "' , '"
+//                + (counter - 1) + "' , '" + raw_cdr_file_name + "' , '" + source + "'  , '" + foreignMsisdn + "' , 'End' ,  '" + server_origin + "'   ,   '" + usageInsertForeign + "' , '" + usageUpdateForeign + "'  , '" + duplicateInsertForeign + "' , '" + duplicateUpdateForeign + "'  , '" + errorCount + "'     )  ";
+//        logger.info(" query is " + query);
+//        try {
+//            stmt = conn.createStatement();
+//            stmt.executeUpdate(query);
+//            stmt.close();
+//        } catch (SQLException e) {
+//            logger.error(e + "in [" + Arrays.stream(e.getStackTrace()).filter(ste -> ste.getClassName().equals(ParserProcess.class.getName())).collect(Collectors.toList()).get(0) + "]");
+//        } finally {
+//            try {
+//                stmt.close();
+//            } catch (SQLException e) {
+//                logger.error(e + "in [" + Arrays.stream(e.getStackTrace()).filter(ste -> ste.getClassName().equals(ParserProcess.class.getName())).collect(Collectors.toList()).get(0) + "]");
+//            }
+//        }
+//    }
 
     private static List<Path> getAllFilesList(String path) {
         List<Path> files_at_directory = null;
