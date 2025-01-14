@@ -61,7 +61,7 @@ public class RuleFilter {
                 }
                 if (device_info.get("failed_rule_aciton").equalsIgnoreCase("rule")) {
                     if (!device_info.get("rule_name").equalsIgnoreCase("EXISTS_IN_ALL_EDR_ACTIVE_DB")) {
-                        insertInDeviceInvalidDb(conn, device_info);
+                       // insertInDeviceInvalidDb(conn, device_info);
                     }
                     rule_detail.put("rule_name", null);
                 } else {
@@ -71,7 +71,7 @@ public class RuleFilter {
                     rule_detail.put("rule_name", device_info.get("rule_name"));
                     rule_detail.put("rule_id", device_info.get("ruleid"));
                     if (!device_info.get("rule_name").equalsIgnoreCase("EXISTS_IN_ALL_EDR_ACTIVE_DB")) {
-                        insertInDeviceInvalidDb(conn, device_info);
+                    //    insertInDeviceInvalidDb(conn, device_info);
                     }
                     break;
                 }
